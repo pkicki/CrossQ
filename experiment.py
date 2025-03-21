@@ -138,10 +138,8 @@ def experiment(
         project=wandb_project,
         name=f"seed={seed}",
         group=group,
-        tags=[],
         sync_tensorboard=True,
         config=config,
-        settings=wandb.Settings(start_method="fork") if is_slurm_job() else None,
         mode=wandb_mode
     ) as wandb_run:
         
@@ -197,8 +195,9 @@ def experiment(
         )
 
         # Create log dir where evaluation results will be saved
-        eval_log_dir = f"./eval_logs/{group + 'seed=' + str(seed) + '_time=' + str(experiment_time)}/eval/"
-        qbias_log_dir = f"./eval_logs/{group + 'seed=' + str(seed) + '_time=' + str(experiment_time)}/qbias/"
+        eval_log_dir = f"./eval_logs/{group + 'seed=' + str(seed)}/eval/"
+        best_model_log_dir = f"./eval_logs/{group + 'seed=' + str(seed)}/best_model/"
+        qbias_log_dir = f"./eval_logs/{group + 'seed=' + str(seed)}/qbias/"
         os.makedirs(eval_log_dir, exist_ok=True)
         os.makedirs(qbias_log_dir, exist_ok=True)
 
@@ -206,7 +205,7 @@ def experiment(
         eval_callback = EvalCallback(
             make_vec_env(env, n_envs=1, seed=seed),
             jax_random_key_for_seeds=seed,
-            best_model_save_path=None,
+            best_model_save_path=best_model_log_dir,
             log_path=eval_log_dir, eval_freq=eval_freq,
             n_eval_episodes=1, deterministic=True, render=False
         )
