@@ -15,6 +15,7 @@ from stable_baselines3.common.type_aliases import Schedule
 from sbx.common.distributions import TanhTransformedDistribution
 from sbx.common.policies import BaseJaxPolicy
 from sbx.common.type_aliases import RLTrainState, ActorTrainState
+from sbx.noise.sb3 import ColoredNoiseDist, MyMultivariateNormalDiag
 
 tfp = tensorflow_probability.substrates.jax
 tfd = tfp.distributions
@@ -274,6 +275,41 @@ class Actor(nn.Module):
     log_std_max: float = 2
     use_batch_norm: bool = False
     bn_mode: str = "bn"
+    noise_type: str = "default"
+    key: PRNGKey = None
+
+    def __post_init__(self):
+        mean = jnp.zeros(self.action_dim)
+        log_std = jnp.ones(self.action_dim)
+        #dist = tfd.MultivariateNormalDiag(loc=mean, scale_diag=jnp.exp(log_std))
+        #a = dist._batch_shape_tensor()
+        noise = MyMultivariateNormalDiag(loc=mean, scale_diag=jnp.exp(log_std))
+        if self.noise_type == "pink":
+            noise = ColoredNoiseDist(beta=1.0, seq_len=100, key=self.key,
+                                     loc=mean, scale_diag=jnp.exp(log_std))
+        self.dist = TanhTransformedDistribution(
+            noise
+            #ColoredNoiseDist(beta=1.0, seq_len=100, key=self.key,
+            #                 loc=mean, scale_diag=jnp.exp(log_std)),
+            #fd.MultivariateNormalDiag(loc=mean, scale_diag=jnp.exp(log_std)),
+            #MyMultivariateNormalDiag(loc=mean, scale_diag=jnp.exp(log_std)),
+        )
+        super().__post_init__()
+    #def __init__(self,
+    #             net_arch: Sequence[int],
+    #             action_dim: int,
+    #             batch_norm_momentum: float,
+    #             log_std_min: float = -20,
+    #             log_std_max: float = 2,
+    #             use_batch_norm: bool = False,
+    #             bn_mode: str = "bn",
+    #             ):
+    #    super().__init__()
+    #    self.net_arch = net_arch
+    #    self.action_dim = action_dim
+    #    self.use_batch_norm = use_batch_norm
+    #    self.batch_norm_momentum = batch_norm_momentum
+    #    self.bn_mode = bn_mode
 
     def get_std(self):
         # Make it work with gSDE
@@ -308,10 +344,16 @@ class Actor(nn.Module):
         mean = nn.Dense(self.action_dim)(x)
         log_std = nn.Dense(self.action_dim)(x)
         log_std = jnp.clip(log_std, self.log_std_min, self.log_std_max)
-        dist = TanhTransformedDistribution(
-            tfd.MultivariateNormalDiag(loc=mean, scale_diag=jnp.exp(log_std)),
-        )
-        return dist
+        #dist = TanhTransformedDistribution(
+        #    tfd.MultivariateNormalDiag(loc=mean, scale_diag=jnp.exp(log_std)),
+        #)
+        #return dist
+        #self.dist.mean = mean
+        #self.dist.log_std = log_std
+        #self.dist._loc = mean
+        #self.dist._scale_diag = jnp.exp(log_std)
+        self.dist.distribution.set_mean_and_scale_diag(mean, jnp.exp(log_std))
+        return self.dist
 
 
 class SACPolicy(BaseJaxPolicy):
@@ -329,6 +371,7 @@ class SACPolicy(BaseJaxPolicy):
         batch_norm: bool = False,
         batch_norm_momentum: float = 0.9,
         batch_norm_mode: str = "bn",
+        noise_type: str = "default",
         use_sde: bool = False,
         # Note: most gSDE parameters are not used
         # this is to keep API consistent with SB3
@@ -370,6 +413,7 @@ class SACPolicy(BaseJaxPolicy):
             self.net_arch_pi = self.net_arch_qf = [256, 256]
         self.n_critics = n_critics
         self.use_sde = use_sde
+        self.noise_type = noise_type
 
         self.key = self.noise_key = jax.random.PRNGKey(0)
 
@@ -396,6 +440,8 @@ class SACPolicy(BaseJaxPolicy):
             use_batch_norm=self.batch_norm,
             batch_norm_momentum=self.batch_norm_momentum,
             bn_mode=self.batch_norm_mode,
+            noise_type=self.noise_type,
+            key=key,
         )
         # Hack to make gSDE work without modifying internal SB3 code
         self.actor.reset_noise = self.reset_noise

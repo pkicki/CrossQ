@@ -64,6 +64,7 @@ class SAC(OffPolicyAlgorithmJax):
         policy_q_reduce_fn = jnp.min,
         train_freq: Union[int, Tuple[int, str]] = 1,
         gradient_steps: int = 1,
+        noise_type: str = "default",
         policy_delay: int = 1,
         action_noise: Optional[ActionNoise] = None,
         replay_buffer_class: Optional[Type[ReplayBuffer]] = None,
@@ -107,6 +108,7 @@ class SAC(OffPolicyAlgorithmJax):
             stats_window_size=stats_window_size,
         )
 
+        self.noise_type = noise_type
         self.policy_delay = policy_delay
         self.ent_coef_init = ent_coef
         self.crossq_style = crossq_style
@@ -130,6 +132,7 @@ class SAC(OffPolicyAlgorithmJax):
                 self.action_space,
                 self.lr_schedule,
                 td3_mode=self.td3_mode,
+                noise_type=self.noise_type,
                 **self.policy_kwargs,
             )
             # pytype: enable=not-instantiable

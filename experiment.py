@@ -50,6 +50,10 @@ def experiment(
     total_timesteps: int = 5e6,
     bnstats_live_net: bool = False,
     results_dir: str = "results/",
+    #noise_type: str = "pink",
+    noise_type: str = "default",
+    cutoff: float = 1.0,
+    order: int = 1,
 ):
 
     bn = bool(bn)
@@ -131,7 +135,10 @@ def experiment(
     config = dict()
     config.update({
         "dropout_rate": dropout_rate,
-        "layer_norm": layer_norm
+        "layer_norm": layer_norm,
+        "noise_type": noise_type,
+        "cutoff": cutoff,
+        "order": order,
     })
 
     with wandb.init(
@@ -177,6 +184,7 @@ def experiment(
                     'b2': 0.999 # default
                 })
             }),
+            noise_type=noise_type,
             gradient_steps=utd,
             policy_delay=policy_delay,
             crossq_style=bool(crossq_style),
