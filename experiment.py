@@ -30,6 +30,7 @@ def experiment(
     log_freq: int = 300,
     wandb_entity: str = 'ias',
     wandb_project: str = 'crossQ_dmc',
+    wandb_group: str = 'test_crossq',
     wandb_mode: str = 'disabled',
     eval_qbias: int = 0,
     adam_b1: float = 0.5,
@@ -137,7 +138,7 @@ def experiment(
         entity=wandb_entity,
         project=wandb_project,
         name=f"seed={seed}",
-        group=group,
+        group=wandb_group,
         sync_tensorboard=True,
         config=config,
         mode=wandb_mode
