@@ -196,11 +196,12 @@ def experiment(
         )
 
         # Create log dir where evaluation results will be saved
-        eval_log_dir = f"./eval_logs/{group + 'seed=' + str(seed)}/eval/"
-        best_model_log_dir = f"./eval_logs/{group + 'seed=' + str(seed)}/best_model/"
-        qbias_log_dir = f"./eval_logs/{group + 'seed=' + str(seed)}/qbias/"
+        eval_log_dir = f"./eval_logs/{wandb_project}/{wandb_group + '_seed' + str(seed)}/"
+        best_model_log_dir = f"./eval_logs/{wandb_project}/{wandb_group + '_seed' + str(seed)}/"
+        qbias_log_dir = f"./eval_logs/{wandb_project}/{wandb_group + '_seed' + str(seed)}/"
         os.makedirs(eval_log_dir, exist_ok=True)
-        os.makedirs(qbias_log_dir, exist_ok=True)
+        if eval_qbias:
+            os.makedirs(qbias_log_dir, exist_ok=True)
 
         # Create callback that evaluates agent
         eval_callback = EvalCallback(
