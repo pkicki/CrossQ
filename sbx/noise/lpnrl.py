@@ -1,9 +1,12 @@
+import jax
 import numpy as np
-import torch
-from sbx.noise.colorednoise import powerlaw_psd_gaussian
-from scipy.signal import butter, lfilter, periodogram
+from scipy.signal import butter, lfilter
 
-from stable_baselines3.common.distributions import SquashedDiagGaussianDistribution, DiagGaussianDistribution
+import tensorflow_probability
+tfp = tensorflow_probability.substrates.jax
+tfd = tfp.distributions
+
+from jax import numpy as jnp
 
 class LowPassNoiseProcess():
     """Infinite low-pass noise process.
@@ -17,7 +20,7 @@ class LowPassNoiseProcess():
     reset()
         Reset the buffer with a new time series.
     """
-    def __init__(self, cutoff, order, sampling_freq, size, scale=1, rng=None):
+    def __init__(self, cutoff, order, sampling_freq, size, scale=1, key=None):
         """Infinite low-pass noise process.
 
         Implemented as a buffer: every `size[-1]` samples, a cut to a new time series starts. 
@@ -45,7 +48,7 @@ class LowPassNoiseProcess():
         self.b, self.a = butter(self.order, self.cutoff, fs=self.sampling_freq)
 
         self.scale = scale
-        self.rng = rng if rng is not None else np.random.default_rng()
+        self.key = key
 
         # The last component of size is the time index
         try:
@@ -59,16 +62,12 @@ class LowPassNoiseProcess():
 
     def reset(self):
         """Reset the buffer with a new time series."""
-        self.beta = 1.
-        self.minimum_frequency = 0.
-        #self.size = (1000, 1000)
-        #self.buffer_ = powerlaw_psd_gaussian(
-        #        exponent=self.beta, size=self.size, fmin=self.minimum_frequency, rng=self.rng)
-        # fill the buffer with the low-pass filtered white noise signal using numpy and scipy
-        self.buffer = self.rng.normal(size=self.size)
+
+        self.buffer = jax.random.normal(shape=self.size, key=self.key)
         self.buffer = lfilter(self.b, self.a, self.buffer)
+        #self.buffer = jnp.array(self.buffer)
         #self.buffer = self.buffer / np.std(self.buffer, axis=-1, keepdims=True)
-        self.buffer = self.buffer / np.std(self.buffer, axis=-1).mean()
+        self.buffer = self.buffer / jnp.std(self.buffer, axis=-1).mean()
 
         #import matplotlib.pyplot as plt
         ## compute and plot periodograms for the buffers
@@ -117,129 +116,88 @@ class LowPassNoiseProcess():
             n += m
             self.idx += m
 
-        ret = self.scale * np.concatenate(ret, axis=-1)
+        ret = self.scale * jnp.concatenate(ret, axis=-1)
         return ret if n > 1 else ret[..., 0]
 
 
-class LowPassNoiseDist(SquashedDiagGaussianDistribution):
-    def __init__(self, cutoff, order, sampling_freq, seq_len, action_dim=None, rng=None, epsilon=1e-6):
-        """
-        Gaussian colored noise distribution for using colored action noise with stochastic policies.
+class LowPassNoiseDist(tfd.Distribution):
+    def __init__(self, cutoff=1.0, order=1, sampling_freq=20., seq_len=100., key=None, loc=None, scale_diag=None, validate_args=False, allow_nan_stats=True, name="MultivariateNormalDiag"):
+        parameters = dict(locals())
+        #with tfp.util.deferred_dependencies.defer_dependencies():
+        self._loc = jnp.zeros_like(scale_diag) if loc is None else jnp.asarray(loc)
+        self._scale_diag = jnp.asarray(scale_diag)
 
-        The colored noise is only used for sampling actions. In all other respects, this class acts like its parent
-        class (`SquashedDiagGaussianDistribution`).
+        self.cutoff = cutoff
+        self.order = order
+        self.sampling_freq = sampling_freq
+        self.seq_len = seq_len
+        
+        self.gen = LowPassNoiseProcess(cutoff=self.cutoff, order=self.order, sampling_freq=self.sampling_freq,
+                                       size=(scale_diag.shape[-1], self.seq_len), key=key)
 
-        Parameters
-        ----------
-        cutoff : float or array_like
-            If it is a single float, then `action_dim` has to be
-            specified and the noise will be sampled in a vectorized manner for each action dimension. If it is
-            array_like, then it specifies one beta for each action dimension. This allows different betas for different
-            action dimensions, but sampling might be slower for high-dimensional action spaces.
-        order : int
-        sampling_freq : float
-        seq_len : int
-            Length of sampled colored noise signals. If sampled for longer than `seq_len` steps, a new
-            colored noise signal of the same length is sampled. Should usually be set to the episode length
-            (horizon) of the RL task.
-        action_dim : int, optional
-            Dimensionality of the action space. If passed, `beta` has to be a single float and the noise will be
-            sampled in a vectorized manner for each action dimension.
-        rng : np.random.Generator, optional
-            Random number generator (for reproducibility). If not passed, a new random number generator is created by
-            calling `np.random.default_rng()`.
-        epsilon : float, optional, by default 1e-6
-            A small value to avoid NaN due to numerical imprecision.
-        """
-        assert (action_dim is not None) == np.isscalar(cutoff), \
-            "`action_dim` has to be specified if and only if `beta` is a scalar."
+        if self._loc.shape != self._scale_diag.shape:
+            raise ValueError(f"Shape mismatch: loc {self._loc.shape} vs scale_diag {self._scale_diag.shape}")
+        
+        self._batch_shape_ = jax.lax.broadcast_shapes(self._loc.shape[:-1], self._scale_diag.shape[:-1])
+        self._event_shape_ = self._loc.shape[-1:]
+        
+        super().__init__(
+            dtype=self._loc.dtype,
+            reparameterization_type=tfd.FULLY_REPARAMETERIZED,
+            validate_args=validate_args,
+            allow_nan_stats=allow_nan_stats,
+            parameters=parameters,
+            name=name,
+        )
 
-        if np.isscalar(cutoff):
-            super().__init__(action_dim, epsilon)
-            self.cutoff = cutoff
-            self.order = order
-            self.sampling_freq = sampling_freq
-            self.gen = LowPassNoiseProcess(cutoff=self.cutoff, order=self.order, sampling_freq=self.sampling_freq, size=(action_dim, seq_len), rng=rng)
-            #self.beta = 1.
-            #self.gen_ = ColoredNoiseProcess(beta=self.beta, size=(action_dim, seq_len), rng=rng)
+    @property
+    def loc(self):
+        return self._loc
+
+    @property
+    def scale_diag(self):
+        return self._scale_diag
+
+    def _batch_shape(self):
+        return self._batch_shape_
+
+    def _event_shape(self):
+        return self._event_shape_
+
+    def _sample_n(self, sample_shape, seed):
+        key = jax.random.split(seed)[0]
+        if type(sample_shape) is not tuple:
+            sample_shape = (sample_shape,)
+        if self._loc.shape[0] == 1:
+            eps = jnp.array(self.gen.sample())[None]
         else:
-            assert len(cutoff) == action_dim, "Length of `beta` has to match `action_dim`."
-            assert len(order) == len(sampling_freq) == len(cutoff), "Length of `order` and `sampling_freq` has to match `cutoff`."
-            super().__init__(len(cutoff), epsilon)
-            self.cutoff = np.asarray(cutoff)
-            self.order = np.asarray(order)
-            self.sampling_freq = np.asarray(sampling_freq)
-            self.gen = [LowPassNoiseProcess(cutoff=c, order=o, sampling_freq=s, size=seq_len, rng=rng) for c, o, s in zip(self.cutoff, self.order, self.sampling_freq)]
+            eps = jax.random.normal(key, shape=sample_shape + self._batch_shape_ + self._event_shape_)
+        return self._loc + eps * self._scale_diag
 
-    def sample(self) -> torch.Tensor:
-        if np.isscalar(self.cutoff):
-            lpn_sample = torch.tensor(self.gen.sample()).float()
-        else:
-            lpn_sample = torch.tensor([lpnp.sample() for lpnp in self.gen]).float()
-        self.gaussian_actions = self.distribution.mean + self.distribution.stddev * lpn_sample
-        return torch.tanh(self.gaussian_actions)
+    def _log_prob(self, value):
+        var = jnp.square(self._scale_diag)
+        log_scale = jnp.log(self._scale_diag)
+        return -0.5 * (jnp.square(value - self._loc) / var + 2. * log_scale + jnp.log(2. * jnp.pi)).sum(axis=-1)
+
+    def _mean(self):
+        return self._loc
+
+    def _stddev(self):
+        return self._scale_diag
+
+    def set_mean_and_scale_diag(self, mean, scale_diag):
+        self._loc = mean
+        self._scale_diag = scale_diag
+        self._batch_shape_ = jax.lax.broadcast_shapes(self._loc.shape[:-1], self._scale_diag.shape[:-1])
+
+    def _entropy(self):
+        return jnp.sum(
+            jnp.log(self._scale_diag * jnp.sqrt(2. * jnp.pi * jnp.e)),
+            axis=-1
+        )
+
+    def mode(self):
+        return self._loc
 
     def __repr__(self) -> str:
-        return f"LowPassNoiseDist(cutoff={self.cutoff}, order={self.order})"
-
-
-class LowPassNoiseUnsquashedDist(DiagGaussianDistribution):
-    def __init__(self, cutoff, order, sampling_freq, seq_len, action_dim=None, rng=None):
-        """
-        Gaussian colored noise distribution for using colored action noise with stochastic policies.
-
-        The colored noise is only used for sampling actions. In all other respects, this class acts like its parent
-        class (`DiagGaussianDistribution`).
-
-        Parameters
-        ----------
-        cutoff : float or array_like
-            If it is a single float, then `action_dim` has to be
-            specified and the noise will be sampled in a vectorized manner for each action dimension. If it is
-            array_like, then it specifies one beta for each action dimension. This allows different betas for different
-            action dimensions, but sampling might be slower for high-dimensional action spaces.
-        order : int
-        sampling_freq : float
-        seq_len : int
-            Length of sampled colored noise signals. If sampled for longer than `seq_len` steps, a new
-            colored noise signal of the same length is sampled. Should usually be set to the episode length
-            (horizon) of the RL task.
-        action_dim : int, optional
-            Dimensionality of the action space. If passed, `beta` has to be a single float and the noise will be
-            sampled in a vectorized manner for each action dimension.
-        rng : np.random.Generator, optional
-            Random number generator (for reproducibility). If not passed, a new random number generator is created by
-            calling `np.random.default_rng()`.
-        epsilon : float, optional, by default 1e-6
-            A small value to avoid NaN due to numerical imprecision.
-        """
-        assert (action_dim is not None) == np.isscalar(cutoff), \
-            "`action_dim` has to be specified if and only if `beta` is a scalar."
-
-        if np.isscalar(cutoff):
-            super().__init__(action_dim)
-            self.cutoff = cutoff
-            self.order = order
-            self.sampling_freq = sampling_freq
-            self.gen = LowPassNoiseProcess(cutoff=self.cutoff, order=self.order, sampling_freq=self.sampling_freq, size=(action_dim, seq_len), rng=rng)
-            #self.beta = 1.
-            #self.gen_ = ColoredNoiseProcess(beta=self.beta, size=(action_dim, seq_len), rng=rng)
-        else:
-            assert len(cutoff) == action_dim, "Length of `beta` has to match `action_dim`."
-            assert len(order) == len(sampling_freq) == len(cutoff), "Length of `order` and `sampling_freq` has to match `cutoff`."
-            super().__init__(len(cutoff))
-            self.cutoff = np.asarray(cutoff)
-            self.order = np.asarray(order)
-            self.sampling_freq = np.asarray(sampling_freq)
-            self.gen = [LowPassNoiseProcess(cutoff=c, order=o, sampling_freq=s, size=seq_len, rng=rng) for c, o, s in zip(self.cutoff, self.order, self.sampling_freq)]
-
-    def sample(self) -> torch.Tensor:
-        if np.isscalar(self.cutoff):
-            lpn_sample = torch.tensor(self.gen.sample()).float()
-        else:
-            lpn_sample = torch.tensor([lpnp.sample() for lpnp in self.gen]).float()
-        self.gaussian_actions = self.distribution.mean + self.distribution.stddev * lpn_sample
-        return self.gaussian_actions
-
-    def __repr__(self) -> str:
-        return f"LowPassNoiseUnsquashedDist(cutoff={self.cutoff}, order={self.order})"
+        return f"LowPassNoiseDist(cutoff={self.cutoff}, order={self.order}, sampling_freq={self.sampling_freq}, seq_len={self.seq_len})"

@@ -15,6 +15,7 @@ from stable_baselines3.common.type_aliases import Schedule
 from sbx.common.distributions import TanhTransformedDistribution
 from sbx.common.policies import BaseJaxPolicy
 from sbx.common.type_aliases import RLTrainState, ActorTrainState
+from sbx.noise.lpnrl import LowPassNoiseDist
 from sbx.noise.sb3 import ColoredNoiseDist, MyMultivariateNormalDiag
 
 tfp = tensorflow_probability.substrates.jax
@@ -276,6 +277,10 @@ class Actor(nn.Module):
     use_batch_norm: bool = False
     bn_mode: str = "bn"
     noise_type: str = "default"
+    seq_len: int = 100
+    cutoff: float = 1.0
+    order: int = 1
+    dt: float = 0.05
     key: PRNGKey = None
 
     def __post_init__(self):
@@ -285,7 +290,11 @@ class Actor(nn.Module):
         #a = dist._batch_shape_tensor()
         noise = MyMultivariateNormalDiag(loc=mean, scale_diag=jnp.exp(log_std))
         if self.noise_type == "pink":
-            noise = ColoredNoiseDist(beta=1.0, seq_len=100, key=self.key,
+            noise = ColoredNoiseDist(beta=1.0, seq_len=self.seq_len, key=self.key,
+                                     loc=mean, scale_diag=jnp.exp(log_std))
+        elif self.noise_type == "lowpass":
+            noise = LowPassNoiseDist(cutoff=self.cutoff, order=self.order, sampling_freq=1./self.dt,
+                                     seq_len=self.seq_len, key=self.key,
                                      loc=mean, scale_diag=jnp.exp(log_std))
         self.dist = TanhTransformedDistribution(
             noise
@@ -372,6 +381,10 @@ class SACPolicy(BaseJaxPolicy):
         batch_norm_momentum: float = 0.9,
         batch_norm_mode: str = "bn",
         noise_type: str = "default",
+        seq_len: int = 100,
+        cutoff: float = 1.0,
+        order: int = 1,
+        dt: float = 0.05,
         use_sde: bool = False,
         # Note: most gSDE parameters are not used
         # this is to keep API consistent with SB3
@@ -414,6 +427,10 @@ class SACPolicy(BaseJaxPolicy):
         self.n_critics = n_critics
         self.use_sde = use_sde
         self.noise_type = noise_type
+        self.seq_len = seq_len
+        self.cutoff = cutoff
+        self.order = order
+        self.dt = dt
 
         self.key = self.noise_key = jax.random.PRNGKey(0)
 
@@ -441,6 +458,10 @@ class SACPolicy(BaseJaxPolicy):
             batch_norm_momentum=self.batch_norm_momentum,
             bn_mode=self.batch_norm_mode,
             noise_type=self.noise_type,
+            seq_len=self.seq_len,
+            cutoff=self.cutoff,
+            order=self.order,
+            dt=self.dt,
             key=key,
         )
         # Hack to make gSDE work without modifying internal SB3 code

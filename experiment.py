@@ -185,6 +185,10 @@ def experiment(
                 })
             }),
             noise_type=noise_type,
+            seq_len=training_env._max_episode_steps,
+            cutoff=cutoff,
+            order=order,
+            dt=training_env.dt,
             gradient_steps=utd,
             policy_delay=policy_delay,
             crossq_style=bool(crossq_style),
