@@ -64,8 +64,9 @@ class LowPassNoiseProcess():
         """Reset the buffer with a new time series."""
 
         self.buffer = jax.random.normal(shape=self.size, key=self.key)
+        self.buffer = np.array(self.buffer)
         self.buffer = lfilter(self.b, self.a, self.buffer)
-        #self.buffer = jnp.array(self.buffer)
+        self.buffer = jnp.array(self.buffer)
         #self.buffer = self.buffer / np.std(self.buffer, axis=-1, keepdims=True)
         self.buffer = self.buffer / jnp.std(self.buffer, axis=-1).mean()
 
