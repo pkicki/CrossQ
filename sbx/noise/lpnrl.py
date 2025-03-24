@@ -1,12 +1,43 @@
 import jax
 import numpy as np
-from scipy.signal import butter, lfilter
+from scipy.signal import butter, lfilter, periodogram
+import matplotlib.pyplot as plt
 
 import tensorflow_probability
 tfp = tensorflow_probability.substrates.jax
 tfd = tfp.distributions
 
 from jax import numpy as jnp
+
+def lfilter_jax(b, a, x):
+    """
+    JAX implementation of scipy.signal.lfilter for 1D signals.
+    
+    Args:
+        b (array): Numerator coefficients of the filter.
+        a (array): Denominator coefficients of the filter. a[0] must be 1.
+        x (array): Input signal (1D array).
+    
+    Returns:
+        y (array): Filtered signal.
+    """
+
+    # Initialize history taps
+    x_tap = jnp.zeros((len(b), x.shape[-1]))
+    y_tap = jnp.zeros((len(a) - 1, x.shape[-1]))
+
+    def scan_step(carry, x_t):
+        x_hist, y_hist = carry
+        x_hist = jnp.roll(x_hist, shift=1)
+        x_hist = x_hist.at[0].set(x_t)
+        y_t = jnp.dot(b, x_hist) - jnp.dot(a[1:], y_hist)
+        y_hist = jnp.roll(y_hist, shift=1)
+        y_hist = y_hist.at[0].set(y_t)
+        return (x_hist, y_hist), y_t
+
+    init_carry = (x_tap, y_tap)
+    _, y = jax.lax.scan(scan_step, init_carry, x)
+    return y
 
 class LowPassNoiseProcess():
     """Infinite low-pass noise process.
@@ -46,6 +77,8 @@ class LowPassNoiseProcess():
         self.order = order
         self.sampling_freq = sampling_freq
         self.b, self.a = butter(self.order, self.cutoff, fs=self.sampling_freq)
+        self.b_jax = jnp.array(self.b)
+        self.a_jax = jnp.array(self.a)
 
         self.scale = scale
         self.key = key
@@ -55,7 +88,7 @@ class LowPassNoiseProcess():
             self.size = list(size)
         except TypeError:
             self.size = [size]
-        self.time_steps = self.size[-1]
+        self.time_steps = self.size[0]
 
         # Fill buffer and reset index
         self.reset()
@@ -63,19 +96,20 @@ class LowPassNoiseProcess():
     def reset(self):
         """Reset the buffer with a new time series."""
 
-        self.buffer = jax.random.normal(shape=self.size, key=self.key)
-        self.buffer = np.array(self.buffer)
-        self.buffer = lfilter(self.b, self.a, self.buffer)
-        self.buffer = jnp.array(self.buffer)
+        noise = jax.random.normal(shape=self.size, key=self.key)
+        #self.buffer = np.array(self.buffer)
+        # TODO implement filter in JAX
+        #self.buffer = lfilter(self.b, self.a, self.buffer)
+        self.buffer = lfilter_jax(self.b_jax, self.a_jax, noise)
+        #self.buffer = jnp.array(self.buffer)
         #self.buffer = self.buffer / np.std(self.buffer, axis=-1, keepdims=True)
-        self.buffer = self.buffer / jnp.std(self.buffer, axis=-1).mean()
+        self.buffer = self.buffer / jnp.std(self.buffer, axis=0).mean()
 
-        #import matplotlib.pyplot as plt
-        ## compute and plot periodograms for the buffers
-        #fs, Pxx = periodogram(self.buffer, fs=self.sampling_freq, axis=-1)
-        #fs_, Pxx_ = periodogram(self.buffer_, fs=self.sampling_freq, axis=-1)
-        #plt.plot(fs, Pxx.mean(0), label='low-pass filtered white noise')
-        #plt.plot(fs_, Pxx_.mean(0), label='pink noise')
+        ### compute and plot periodograms for the buffers
+        #fs, Pxx = periodogram(np.array(self.buffer), fs=self.sampling_freq, axis=0)
+        #fs_, Pxx_ = periodogram(np.array(noise), fs=self.sampling_freq, axis=0)
+        #plt.plot(fs, Pxx.mean(-1), label='low-pass filtered white noise')
+        #plt.plot(fs_, Pxx_.mean(-1), label='white noise')
         #plt.xscale('log')
         #plt.yscale('log')
         #plt.legend()
@@ -84,8 +118,8 @@ class LowPassNoiseProcess():
 
         #for i in range(9):
         #    plt.subplot(3, 3, i + 1)
-        #    plt.plot(self.buffer[i], label='low-pass filtered white noise')
-        #    plt.plot(self.buffer_[i], label='pink noise')
+        #    plt.plot(self.buffer[:, i], label='low-pass filtered white noise')
+        #    plt.plot(noise[:, i], label='white noise')
         #plt.legend()
         #plt.show()
         
@@ -113,12 +147,12 @@ class LowPassNoiseProcess():
             if self.idx >= self.time_steps:
                 self.reset()
             m = min(T - n, self.time_steps - self.idx)
-            ret.append(self.buffer[..., self.idx:(self.idx + m)])
+            ret.append(self.buffer[self.idx:(self.idx + m)])
             n += m
             self.idx += m
 
         ret = self.scale * jnp.concatenate(ret, axis=-1)
-        return ret if n > 1 else ret[..., 0]
+        return ret if n > 1 else ret[0]
 
 
 class LowPassNoiseDist(tfd.Distribution):
@@ -134,7 +168,7 @@ class LowPassNoiseDist(tfd.Distribution):
         self.seq_len = seq_len
         
         self.gen = LowPassNoiseProcess(cutoff=self.cutoff, order=self.order, sampling_freq=self.sampling_freq,
-                                       size=(scale_diag.shape[-1], self.seq_len), key=key)
+                                       size=(self.seq_len, scale_diag.shape[-1]), key=key)
 
         if self._loc.shape != self._scale_diag.shape:
             raise ValueError(f"Shape mismatch: loc {self._loc.shape} vs scale_diag {self._scale_diag.shape}")
