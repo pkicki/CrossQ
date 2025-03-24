@@ -28,10 +28,10 @@ def lfilter_jax(b, a, x):
 
     def scan_step(carry, x_t):
         x_hist, y_hist = carry
-        x_hist = jnp.roll(x_hist, shift=1)
+        x_hist = jnp.roll(x_hist, shift=1, axis=0)
         x_hist = x_hist.at[0].set(x_t)
         y_t = jnp.dot(b, x_hist) - jnp.dot(a[1:], y_hist)
-        y_hist = jnp.roll(y_hist, shift=1)
+        y_hist = jnp.roll(y_hist, shift=1, axis=0)
         y_hist = y_hist.at[0].set(y_t)
         return (x_hist, y_hist), y_t
 
