@@ -167,14 +167,21 @@ class LowPassNoiseDist(tfd.Distribution):
         self.sampling_freq = sampling_freq
         self.seq_len = seq_len
         
-        self.gen = LowPassNoiseProcess(cutoff=self.cutoff, order=self.order, sampling_freq=self.sampling_freq,
-                                       size=(self.seq_len, scale_diag.shape[-1]), key=key)
+        #self.gen = LowPassNoiseProcess(cutoff=self.cutoff, order=self.order, sampling_freq=self.sampling_freq,
+        #                               size=(self.seq_len, scale_diag.shape[-1]), key=key)
 
         if self._loc.shape != self._scale_diag.shape:
             raise ValueError(f"Shape mismatch: loc {self._loc.shape} vs scale_diag {self._scale_diag.shape}")
         
         self._batch_shape_ = jax.lax.broadcast_shapes(self._loc.shape[:-1], self._scale_diag.shape[:-1])
         self._event_shape_ = self._loc.shape[-1:]
+
+        self.b, self.a = butter(self.order, self.cutoff, fs=self.sampling_freq)
+        self.b_jax = jnp.array(self.b)
+        self.a_jax = jnp.array(self.a)
+
+        self.x_hist = jnp.zeros((self.order+1, self._loc.shape[-1]))
+        self.y_hist = jnp.zeros((self.order, self._loc.shape[-1]))
         
         super().__init__(
             dtype=self._loc.dtype,
@@ -203,10 +210,16 @@ class LowPassNoiseDist(tfd.Distribution):
         key = jax.random.split(seed)[0]
         if type(sample_shape) is not tuple:
             sample_shape = (sample_shape,)
+        eps = jax.random.normal(key, shape=sample_shape + self._batch_shape_ + self._event_shape_)
         if self._loc.shape[0] == 1:
-            eps = jnp.array(self.gen.sample())[None]
-        else:
-            eps = jax.random.normal(key, shape=sample_shape + self._batch_shape_ + self._event_shape_)
+            # filter the signal
+            self.x_hist = jnp.roll(self.x_hist, shift=1, axis=0)
+            self.x_hist = self.x_hist.at[0].set(eps[0, 0])
+            y = jnp.dot(self.b_jax, self.x_hist) - jnp.dot(self.a_jax[1:], self.y_hist)
+            self.y_hist = jnp.roll(self.y_hist, shift=1, axis=0)
+            self.y_hist = self.y_hist.at[0].set(y)
+            eps = y[None, None]
+
         return self._loc + eps * self._scale_diag
 
     def _log_prob(self, value):

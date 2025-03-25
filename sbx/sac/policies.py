@@ -276,34 +276,9 @@ class Actor(nn.Module):
     log_std_max: float = 2
     use_batch_norm: bool = False
     bn_mode: str = "bn"
-    noise_type: str = "default"
-    seq_len: int = 100
-    cutoff: float = 1.0
-    order: int = 1
-    dt: float = 0.05
+    noise_dist: tfd.Distribution = None,
     key: PRNGKey = None
 
-    def __post_init__(self):
-        mean = jnp.zeros(self.action_dim)
-        log_std = jnp.ones(self.action_dim)
-        #dist = tfd.MultivariateNormalDiag(loc=mean, scale_diag=jnp.exp(log_std))
-        #a = dist._batch_shape_tensor()
-        noise = MyMultivariateNormalDiag(loc=mean, scale_diag=jnp.exp(log_std))
-        if self.noise_type == "pink":
-            noise = ColoredNoiseDist(beta=1.0, seq_len=self.seq_len, key=self.key,
-                                     loc=mean, scale_diag=jnp.exp(log_std))
-        elif self.noise_type == "lowpass":
-            noise = LowPassNoiseDist(cutoff=self.cutoff, order=self.order, sampling_freq=1./self.dt,
-                                     seq_len=self.seq_len, key=self.key,
-                                     loc=mean, scale_diag=jnp.exp(log_std))
-        self.dist = TanhTransformedDistribution(
-            noise
-            #ColoredNoiseDist(beta=1.0, seq_len=100, key=self.key,
-            #                 loc=mean, scale_diag=jnp.exp(log_std)),
-            #fd.MultivariateNormalDiag(loc=mean, scale_diag=jnp.exp(log_std)),
-            #MyMultivariateNormalDiag(loc=mean, scale_diag=jnp.exp(log_std)),
-        )
-        super().__post_init__()
     #def __init__(self,
     #             net_arch: Sequence[int],
     #             action_dim: int,
@@ -361,8 +336,9 @@ class Actor(nn.Module):
         #self.dist.log_std = log_std
         #self.dist._loc = mean
         #self.dist._scale_diag = jnp.exp(log_std)
-        self.dist.distribution.set_mean_and_scale_diag(mean, jnp.exp(log_std))
-        return self.dist
+        #self.dist.distribution.set_mean_and_scale_diag(mean, jnp.exp(log_std))
+        self.noise_dist.distribution.set_mean_and_scale_diag(mean, jnp.exp(log_std))
+        return self.noise_dist
 
 
 class SACPolicy(BaseJaxPolicy):
@@ -451,17 +427,30 @@ class SACPolicy(BaseJaxPolicy):
             obs = jnp.array([self.observation_space.sample()])
         action = jnp.array([self.action_space.sample()])
 
+        action_dim = int(np.prod(self.action_space.shape))
+        mean = jnp.zeros(action_dim)
+        log_std = jnp.ones(action_dim)
+        #dist = tfd.MultivariateNormalDiag(loc=mean, scale_diag=jnp.exp(log_std))
+        #a = dist._batch_shape_tensor()
+        noise = MyMultivariateNormalDiag(loc=mean, scale_diag=jnp.exp(log_std))
+        if self.noise_type == "pink":
+            noise = ColoredNoiseDist(beta=1.0, seq_len=self.seq_len, key=self.key,
+                                     loc=mean, scale_diag=jnp.exp(log_std))
+        elif self.noise_type == "lowpass":
+            noise = LowPassNoiseDist(cutoff=self.cutoff, order=self.order, sampling_freq=1./self.dt,
+                                     seq_len=self.seq_len, key=self.key,
+                                     loc=mean, scale_diag=jnp.exp(log_std))
+        noise_dist = TanhTransformedDistribution(
+            noise
+        )
+
         self.actor = Actor(
             action_dim=int(np.prod(self.action_space.shape)),
             net_arch=self.net_arch_pi,
             use_batch_norm=self.batch_norm,
             batch_norm_momentum=self.batch_norm_momentum,
             bn_mode=self.batch_norm_mode,
-            noise_type=self.noise_type,
-            seq_len=self.seq_len,
-            cutoff=self.cutoff,
-            order=self.order,
-            dt=self.dt,
+            noise_dist=noise_dist,
             key=key,
         )
         # Hack to make gSDE work without modifying internal SB3 code
