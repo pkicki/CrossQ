@@ -332,11 +332,7 @@ class Actor(nn.Module):
         #    tfd.MultivariateNormalDiag(loc=mean, scale_diag=jnp.exp(log_std)),
         #)
         #return dist
-        #self.dist.mean = mean
-        #self.dist.log_std = log_std
-        #self.dist._loc = mean
-        #self.dist._scale_diag = jnp.exp(log_std)
-        #self.dist.distribution.set_mean_and_scale_diag(mean, jnp.exp(log_std))
+
         self.noise_dist.distribution.set_mean_and_scale_diag(mean, jnp.exp(log_std))
         return self.noise_dist
 

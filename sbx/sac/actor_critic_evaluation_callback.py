@@ -396,8 +396,9 @@ class EvalCallback(EventCallback):
                 if self.verbose >= 1:
                     print("New best mean reward!")
                 if self.best_model_save_path is not None:
-                    pass # CANNOT SAVE FOR NOW
-                    #self.model.save(os.path.join(self.best_model_save_path, "best_model"))
+                    self.model.actor.noise_dist.distribution._loc = None
+                    self.model.actor.noise_dist.distribution._scale_diag = None
+                    self.model.save(os.path.join(self.best_model_save_path, "best_model"))
                 self.best_mean_reward = mean_reward
                 # Trigger callback on new best model, if needed
                 if self.callback_on_new_best is not None:
