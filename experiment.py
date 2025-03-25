@@ -158,6 +158,8 @@ def experiment(
 
         training_env = gym.make(env)
 
+        seq_len = training_env._max_episode_steps if hasattr(training_env, '_max_episode_steps') else int(training_env.unwrapped._step_limit)
+
         if env.startswith('dm_control/'):
             for key in training_env.observation_space.spaces.keys():
                 box = training_env.observation_space.spaces[key]
@@ -185,7 +187,7 @@ def experiment(
                 })
             }),
             noise_type=noise_type,
-            seq_len=training_env._max_episode_steps,
+            seq_len=seq_len,
             cutoff=cutoff,
             order=order,
             dt=training_env.dt,
